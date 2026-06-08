@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>3D Desktop Mockup</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{
+    width:100%;height:100%;
+    background:transparent;
+    display:flex;align-items:center;justify-content:center;
+    overflow:hidden;
+  }
+  canvas{display:block;cursor:grab}
+  canvas:active{cursor:grabbing}
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="480"></canvas>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+"use strict";
+
+const canvas = document.getElementById('c');
+const W = canvas.width, H = canvas.height;
+
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
+renderer.setSize(W, H);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(0x000000, 0);
+renderer.physicallyCorrectLights = true;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(28, W/H, 0.1, 100);
+camera.position.z = 6.5;
+
+// ── Environment map ─────────────────────────────────────────────
+const eqC = document.createElement('canvas');
+eqC.width = 2048; eqC.height = 1024;
+const eqX = eqC.getContext('2d');
+const eqH = eqX.createLinearGradient(0,0,2048,0);
+[[0,'#d060e0'],[.10,'#4030c0'],[.22,'#080818'],[.34,'#1828a0'],
+ [.46,'#a04808'],[.55,'#ffe080'],[.64,'#ffa020'],[.74,'#a04808'],
+ [.86,'#6020b0'],[1.0,'#d060e0']
+].forEach(([t,c])=>eqH.addColorStop(t,c));
+eqX.fillStyle=eqH; eqX.fillRect(0,0,2048,1024);
+const eqV = eqX.createLinearGradient(0,0,0,1024);
+[[0,'rgba(255,255,255,1.0)'],[.12,'rgba(220,230,255,0.5)'],
+ [.35,'rgba(0,0,0,0)'],[1,'rgba(0,0,0,0.80)']
+].forEach(([t,c])=>eqV.addColorStop(t,c));
+eqX.fillStyle=eqV; eqX.fillRect(0,0,2048,1024);
+[[1024,20,120,'rgba(255,255,255,1.0)'],[280,90,90,'rgba(255,220,130,0.95)'],
+ [1700,110,80,'rgba(200,160,255,0.90)'],[60,480,110,'rgba(255,140,30,0.80)'],
+ [1970,460,90,'rgba(100,190,255,0.80)']
+].forEach(([cx,cy,r,c])=>{
+  const g=eqX.createRadialGradient(cx,cy,0,cx,cy,r);
+  g.addColorStop(0,c); g.addColorStop(1,'rgba(0,0,0,0)');
+  eqX.fillStyle=g; eqX.fillRect(0,0,2048,1024);
+});
+const eqTex = new THREE.CanvasTexture(eqC);
+eqTex.mapping = THREE.EquirectangularReflectionMapping;
+const pmrem = new THREE.PMREMGenerator(renderer);
+pmrem.compileEquirectangularShader();
+const envMap = pmrem.fromEquirectangular(eqTex).texture;
+scene.environment = envMap;
+pmrem.dispose(); eqTex.dispose();
+
+// ── Lights ──────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0xffffff, 0.15));
+[[0xfff2e8,2.8, 2.5, 4,  5],
+ [0xaac0ff,1.1,-3.5, 1,  2],
+ [0xffffff,2.0, 0.5,-5, -3],
+ [0xcc88ff,0.8, 4,   2, -3],
+ [0xffffff,0.9, 0,  10,  1],
+].forEach(([col,int,x,y,z])=>{
+  const l = new THREE.DirectionalLight(col, int);
+  l.position.set(x,y,z);
+  scene.add(l);
+});
+
+// ── Materials ───────────────────────────────────────────────────
+function smat(col, metal, rough, envI){
+  return new THREE.MeshStandardMaterial({color:col,metalness:metal,roughness:rough,envMap,envMapIntensity:envI});
+}
+
+// ── Superellipse / squircle shape builder ────────────────────────
+// GIF aspect ratio: 1728/1080 = 1.6 (16:10)
+// Device: landscape squircle tablet/screen shape
+// Real dimensions in scene units
+const DW = 3.2;   // width
+const DH = 2.0;   // height (DW / 1.6)
+const DD = 0.055; // depth — thin pebble
+
+// Corner radius — reduced 75%
+const DR = 0.045;
+
+// Pebble bevel — eat most of the depth for rounded edge profile
+const BEVEL    = DD * 0.44;
+const BEV_SEGS = 24;
+
+function rRect(w, h, r){
+  const s = new THREE.Shape();
+  s.moveTo(-w/2+r, -h/2);
+  s.lineTo( w/2-r, -h/2); s.quadraticCurveTo( w/2,-h/2, w/2,-h/2+r);
+  s.lineTo( w/2,   h/2-r); s.quadraticCurveTo( w/2, h/2, w/2-r, h/2);
+  s.lineTo(-w/2+r,  h/2); s.quadraticCurveTo(-w/2, h/2,-w/2, h/2-r);
+  s.lineTo(-w/2,  -h/2+r); s.quadraticCurveTo(-w/2,-h/2,-w/2+r,-h/2);
+  return s;
+}
+
+const G = new THREE.Group();
+scene.add(G);
+
+// ── Body ────────────────────────────────────────────────────────
+const bodyGeo = new THREE.ExtrudeGeometry(rRect(DW, DH, DR), {
+  depth: DD,
+  bevelEnabled: true,
+  bevelSegments: BEV_SEGS,
+  bevelSize: BEVEL,
+  bevelThickness: BEVEL,
+  curveSegments: 48
+});
+bodyGeo.center();
+G.add(new THREE.Mesh(bodyGeo, smat(0xd4d8e2, 1.0, 0.07, 2.6)));
+
+// ── GIF screen texture via animated <img> ─────────────────────── 
+// We draw the GIF onto a canvas each frame — browsers animate GIFs
+// automatically when drawn via drawImage
+const FRONT_Z = (DD + 2 * BEVEL) / 2;
+
+// Screen fills full face edge-to-edge
+const scrW = DW;
+const scrH = DH;
+
+const RES_W = 864, RES_H = 540; // half GIF res for performance
+const scrCanvas = document.createElement('canvas');
+scrCanvas.width = RES_W; scrCanvas.height = RES_H;
+const scrCtx = scrCanvas.getContext('2d');
+
+// Corner clip radius proportional to DR
+const texR = (DR / scrW) * RES_W;
+
+function drawRoundedRect(ctx, x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+}
+
+const scrTex = new THREE.CanvasTexture(scrCanvas);
+
+// GIF must be in the live DOM for browser to advance frames
+// A hidden <img> in the page body is the only reliable cross-browser approach
+const gifImg = document.createElement('img');
+gifImg.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0.01;pointer-events:none;top:0;left:0;';
+gifImg.src = 'animation.gif'; // ← put your GIF in the same folder, rename to animation.gif
+document.body.appendChild(gifImg);
+
+// Screen material — transparent so rounded corners show body
+const scrMat = new THREE.MeshStandardMaterial({
+  map: scrTex,
+  metalness: 0.0,
+  roughness: 0.02,
+  transparent: true
+});
+const scrMesh = new THREE.Mesh(new THREE.PlaneGeometry(scrW, scrH), scrMat);
+scrMesh.position.set(0, 0, FRONT_Z + 0.001);
+G.add(scrMesh);
+
+// Glass sheen
+const glassMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(scrW, scrH),
+  new THREE.MeshStandardMaterial({
+    color:0xddeeff, metalness:0, roughness:0.01,
+    transparent:true, opacity:0.05, envMap, envMapIntensity:1.5
+  })
+);
+glassMesh.position.set(0, 0, FRONT_Z + 0.003);
+G.add(glassMesh);
+
+// Back panel — use same rounded shape as body so edges match flush
+const BACK_Z = -(DD + 2 * BEVEL) / 2;
+const backGeo = new THREE.ShapeGeometry(rRect(DW, DH, DR), 48);
+const backMesh = new THREE.Mesh(backGeo, smat(0xc8ccd8, 1.0, 0.06, 2.6));
+backMesh.rotation.y = Math.PI;
+backMesh.position.set(0, 0, BACK_Z + 0.001);
+G.add(backMesh);
+
+// ── Interaction ──────────────────────────────────────────────────
+let tRX=-0.08, tRY=0.15, rotX=-0.08, rotY=0.15;
+let vx=0, vy=0, drag=false, px=0, py=0;
+let lastInteract=0;
+const AUTO_SPEED=-0.00075, RESUME_DELAY=1800; // reversed, 75% slower
+
+canvas.addEventListener('mousedown',e=>{drag=true;px=e.clientX;py=e.clientY;vx=vy=0;lastInteract=Date.now();});
+window.addEventListener('mouseup',()=>{drag=false;lastInteract=Date.now();});
+window.addEventListener('mousemove',e=>{
+  if(!drag)return;
+  tRY-=(e.clientX-px)*0.004; tRX+=(e.clientY-py)*0.004;
+  vy=-(e.clientX-px)*0.004; vx=(e.clientY-py)*0.004;
+  tRX=Math.max(-1.2,Math.min(1.2,tRX));
+  tRY=Math.max(-1.8,Math.min(1.8,tRY));
+  px=e.clientX; py=e.clientY;
+});
+canvas.addEventListener('touchstart',e=>{drag=true;px=e.touches[0].clientX;py=e.touches[0].clientY;lastInteract=Date.now();},{passive:true});
+window.addEventListener('touchend',()=>{drag=false;lastInteract=Date.now();});
+window.addEventListener('touchmove',e=>{
+  if(!drag)return;
+  tRY-=(e.touches[0].clientX-px)*0.004; tRX+=(e.touches[0].clientY-py)*0.004;
+  tRX=Math.max(-1.2,Math.min(1.2,tRX)); tRY=Math.max(-1.8,Math.min(1.8,tRY));
+  px=e.touches[0].clientX; py=e.touches[0].clientY;
+},{passive:true});
+canvas.addEventListener('wheel',e=>{
+  camera.position.z=Math.max(3.5,Math.min(12,camera.position.z+e.deltaY*0.01));
+  e.preventDefault();
+},{passive:false});
+
+// ── Render loop — redraw GIF canvas every frame ──────────────────
+function animate(){
+  requestAnimationFrame(animate);
+  const idle = !drag && (Date.now()-lastInteract > RESUME_DELAY);
+  if(!drag){ vx*=0.88; vy*=0.88; tRX+=vx; tRY+=vy; }
+  if(idle){ tRY+=AUTO_SPEED; tRX+=(0-tRX)*0.015; }
+  rotX+=(tRX-rotX)*0.10; rotY+=(tRY-rotY)*0.10;
+  G.rotation.x=rotX; G.rotation.y=rotY;
+
+  // Redraw GIF onto canvas every frame — browser advances GIF animation
+  if(gifImg.complete && gifImg.naturalWidth > 0){
+    scrCtx.clearRect(0,0,RES_W,RES_H);
+    scrCtx.save();
+    drawRoundedRect(scrCtx,0,0,RES_W,RES_H,texR);
+    scrCtx.clip();
+    scrCtx.drawImage(gifImg,0,0,RES_W,RES_H);
+    scrCtx.restore();
+    scrTex.needsUpdate=true;
+  }
+
+  renderer.render(scene,camera);
+}
+animate();
+
+})();
+</script>
+</body>
+</html>
